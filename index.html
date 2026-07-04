@@ -1,1 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>WebGPU Docking</title>
+<style>
+    body {
+        font-family: monospace;
+        background: #111;
+        color: #0f0;
+        padding: 1rem;
+    }
+    #log {
+        white-space: pre-wrap;
+        word-break: break-all;
+    }
+    .warn {
+        color: #fa0;
+    }
+    .err {
+        color: #f44;
+    }
+
+    #progress-container {
+        position: sticky;
+        top: 0;
+        background: #111;
+        padding-bottom: 0.5rem;
+        margin-bottom: 0.5rem;
+        border-bottom: 1px solid #333;
+        z-index: 10;
+    }
+    #status {
+        margin-bottom: 4px;
+        font-size: 0.9rem;
+    }
+    #bar-track {
+        width: 100%;
+        height: 18px;
+        background: #222;
+        border: 1px solid #0f0;
+        border-radius: 3px;
+        overflow: hidden;
+    }
+    #bar-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #0f0, #0f0);
+        transition: width 0.15s ease;
+    }
+    #bar-label {
+        float: right;
+        font-size: 0.8rem;
+        line-height: 18px;
+        padding-right: 4px;
+        color: #0f0;
+    }
+    #bar-wrapper {
+        position: relative;
+    }
+    #bar-label {
+        position: absolute;
+        right: 6px;
+        top: 0;
+        line-height: 18px;
+        font-size: 0.8rem;
+    }
+    .done {
+        color: #888;
+    }
+</style>
+</head>
+<body>
+
+<div id="progress-container">
+    <div id="status">Initializing...</div>
+    <div id="bar-wrapper">
+        <div id="bar-track">
+            <div id="bar-fill"></div>
+        </div>
+        <div id="bar-label">0%</div>
+    </div>
+</div>
+
+<div id="log"></div>
 <script src="webgpu-dock-rotation.js"></script>
+
+</body>
+</html>
