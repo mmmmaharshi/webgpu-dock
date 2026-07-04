@@ -679,9 +679,23 @@ async function runDemo({
   bar.setProgress(100);
   const totalSec = ((performance.now() - tStart) / 1000).toFixed(1);
 
+  // Compare best pose to real STI position (PDB 1IEP chain A)
+  const realCenter = [15.614, 53.38, 15.455];
+  const lcx = ligandAtomsBase.reduce((s, a) => s + a.x, 0) / ligandAtomsBase.length;
+  const lcy = ligandAtomsBase.reduce((s, a) => s + a.y, 0) / ligandAtomsBase.length;
+  const lcz = ligandAtomsBase.reduce((s, a) => s + a.z, 0) / ligandAtomsBase.length;
+  const pb = globalBestIdx * 12;
+  const rx = poses[pb] * lcx + poses[pb + 1] * lcy + poses[pb + 2] * lcz + poses[pb + 9];
+  const ry = poses[pb + 3] * lcx + poses[pb + 4] * lcy + poses[pb + 5] * lcz + poses[pb + 10];
+  const rz = poses[pb + 6] * lcx + poses[pb + 7] * lcy + poses[pb + 8] * lcz + poses[pb + 11];
+  const dist = Math.sqrt((rx - realCenter[0]) ** 2 + (ry - realCenter[1]) ** 2 + (rz - realCenter[2]) ** 2);
   console.log(`\nBEST OVERALL: ${globalBest.toFixed(3)} kcal/mol (conformer #${globalBestConf}, pose #${globalBestIdx})`);
+  console.log(`Best pose center: (${rx.toFixed(2)}, ${ry.toFixed(2)}, ${rz.toFixed(2)})`);
+  console.log(`Real STI center (PDB 1IEP): (${realCenter[0]}, ${realCenter[1]}, ${realCenter[2]})`);
+  console.log(`Distance from real STI: ${dist.toFixed(2)} Å  ${dist < 5 ? '✓ Near pocket' : '✗ Far from pocket'}`);
+
   console.log(`Total run time: ${totalSec}s`);
-  bar.setStatus(`Best: ${globalBest.toFixed(1)} kcal/mol — Done`);
+  bar.setStatus(`Best: ${globalBest.toFixed(1)} kcal/mol — ${dist.toFixed(1)}Å from STI`);
   bar.done();
 
   return { globalBest, globalBestIdx, globalBestConf, globalBestAngles };
