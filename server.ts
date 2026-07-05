@@ -7,6 +7,7 @@ const DATA   = join(import.meta.dir, 'data');
 const MIME: Record<string, string> = {
   '.html': 'text/html',
   '.js':   'application/javascript',
+  '.wasm': 'application/wasm',
   '.pdbqt': 'text/plain',
   '.pdb':  'text/plain',
   '.dat':  'text/plain',

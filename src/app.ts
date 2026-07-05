@@ -464,4 +464,83 @@ async function runBenchmark(): Promise<void> {
       lig: "systems/1iep/ligand.pdbqt",
       // pdb/resName removed: they triggered the live OpenBabel WASM
       // PDB->PDBQT conversion path, which hangs during module init in the
-  
+      // browser (never fires its ready callback — a bug in the bundled
+      // openbabel.js/.wasm, not app code). A correctly pre-converted
+      // protein.pdbqt/ligand.pdbqt already exists on disk for 1IEP, same as
+      // the other 4 systems, so just fetch those instead.
+      center: [15.614, 53.38, 15.455],
+    },
+    {
+      name: "1HSG (indinavir)",
+      prot: "systems/1hsg/protein.pdbqt",
+      lig: "systems/1hsg/ligand.pdbqt",
+      center: [13.073, 22.467, 5.557],
+    },
+    {
+      name: "1STP (biotin)",
+      prot: "systems/1stp/protein.pdbqt",
+      lig: "systems/1stp/ligand.pdbqt",
+      center: [11.118, 1.68, -10.755],
+    },
+    {
+      name: "3PTB (benzamidine)",
+      prot: "systems/3ptb/protein.pdbqt",
+      lig: "systems/3ptb/ligand.pdbqt",
+      center: [-1.759, 14.461, 16.916],
+    },
+    {
+      name: "1AC8 (TMZ)",
+      prot: "systems/1ac8/protein.pdbqt",
+      lig: "systems/1ac8/ligand.pdbqt",
+      center: [31.924, 93.444, 47.924],
+    },
+  ];
+
+  const tBenchStart = performance.now();
+  const results: BenchResult[] = [];
+
+  for (let i = 0; i < systems.length; i++) {
+    const sys = systems[i];
+    console.log(`\n${"=".repeat(60)}`);
+    console.log(`  [${i + 1}/${systems.length}] ${sys.name}`);
+    console.log(`${"=".repeat(60)}`);
+    const r = await runDemo({
+      proteinPDBQT: sys.prot,
+      ligandPDBQT: sys.lig,
+      proteinPDB: sys.pdb,
+      ligandResName: sys.resName,
+      systemName: sys.name,
+      knownCenter: sys.center,
+      numConformers: 20,
+    });
+    if (r) results.push(r);
+  }
+
+  const benchTotal = ((performance.now() - tBenchStart) / 1000).toFixed(1);
+
+  console.log(`\n\n${"=".repeat(72)}`);
+  console.log(`  BENCHMARK RESULTS`);
+  console.log(`${"=".repeat(72)}`);
+  console.log(
+    `  ${"System".padEnd(24)} ${"Best Score".padEnd(14)} ${"Distance".padEnd(10)} ${"Time".padEnd(8)} ${"Status"}`,
+  );
+  console.log(
+    `  ${"─".repeat(23)} ${"─".repeat(13)} ${"─".repeat(9)} ${"─".repeat(7)} ${"─".repeat(8)}`,
+  );
+  for (const r of results) {
+    const status = r.dist < 2 ? "✓ Hit" : r.dist < 5 ? "○ Near" : "✗ Miss";
+    console.log(
+      `  ${r.systemName.padEnd(24)} ${(r.bestScore.toFixed(2) + " kcal/mol").padEnd(14)} ${(r.dist.toFixed(2) + " Å").padEnd(10)} ${(r.totalTime.toFixed(1) + "s").padEnd(8)} ${status}`,
+    );
+  }
+  console.log(`${"=".repeat(72)}`);
+  console.log(`  Total benchmark time: ${benchTotal}s`);
+  console.log(`${"=".repeat(72)}`);
+
+  bar.setStatus(
+    `Benchmark: ${benchTotal}s — ${results.filter((r) => r.dist < 2).length}/${results.length} hits`,
+  );
+  bar.done();
+}
+
+runBenchmark();

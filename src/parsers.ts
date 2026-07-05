@@ -85,3 +85,43 @@ export function parseLigandPDBQT(text: string): LigandResult {
 }
 
 export async function loadAD4Params(): Promise<Record<string, AD4Params>> {
+  const url =
+    "https://raw.githubusercontent.com/ccsb-scripps/AutoDock-Vina/develop/data/AD4_parameters.dat";
+  const text = await fetch(url).then((r) => r.text());
+  const table: Record<string, AD4Params> = {};
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("atom_par")) continue;
+    const parts = line.trim().split(/\s+/);
+    table[parts[1]] = {
+      Rii: parseFloat(parts[2]),
+      epsii: parseFloat(parts[3]),
+    };
+  }
+  return table;
+}
+
+export function atomsToArrayReal(
+  atoms: Atom[],
+  ad4Table: Record<string, AD4Params>,
+): Float32Array {
+  const arr = new Float32Array(atoms.length * 6);
+  atoms.forEach((a, i) => {
+    const params = ad4Table[a.atomType];
+    if (!params) {
+      console.warn(
+        `No AD4 param for atom type "${a.atomType}", using generic carbon fallback`,
+      );
+    }
+    const Rii = params ? params.Rii : 4.0;
+    const epsii = params ? params.epsii : 0.15;
+
+    const base = i * 6;
+    arr[base] = a.x;
+    arr[base + 1] = a.y;
+    arr[base + 2] = a.z;
+    arr[base + 3] = a.charge;
+    arr[base + 4] = Rii * RII_TO_SIGMA;
+    arr[base + 5] = epsii;
+  });
+  return arr;
+}

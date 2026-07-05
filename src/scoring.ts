@@ -248,4 +248,18 @@ export async function scoreAllPosesGPU(
   const encoder = device.createCommandEncoder();
   const pass = encoder.beginComputePass();
   pass.setPipeline(_pipeline);
-  pass.s
+  pass.setBindGroup(0, bindGroup);
+  pass.dispatchWorkgroups(Math.ceil(numPoses / 64));
+  pass.end();
+  encoder.copyBufferToBuffer(energiesBuf, 0, readbackBuf, 0, numPoses * 4);
+  device.queue.submit([encoder.finish()]);
+
+  await readbackBuf.mapAsync(GPUMapMode.READ);
+  const t1 = performance.now();
+
+  const mapped = new Float32Array(readbackBuf.getMappedRange());
+  const energies = new Float32Array(mapped);
+  readbackBuf.unmap();
+
+  return { energies, gpuMs: t1 - t0 };
+}

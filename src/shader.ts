@@ -67,4 +67,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       let r2 = dx * dx + dy * dy + dz * dz;
       if (r2 < 1.0) { clashCount = clashCount + 1u; }
       let r2v = max(r2, 1.0);
-  
+      let r  = sqrt(r2v);
+
+      let sigma   = 0.5 * (lSigma + pSigma);
+      let epsilon = sqrt(lEps * pEps);
+      let sr6  = pow(sigma / r, 6.0);
+      let sr12 = sr6 * sr6;
+      var lj = 4.0 * epsilon * (sr12 - sr6);
+      lj = min(lj, 10.0);
+
+      let coulomb = COULOMB_K * lCharge * pCharge / (dielectric(r) * r);
+
+      totalEnergy = totalEnergy + lj + coulomb;
+    }
+  }
+
+  if (clashCount > 3u) { totalEnergy = 1e10; }
+  totalEnergy = min(totalEnergy, 10000.0);
+  energies[poseIdx] = totalEnergy;
+}
+`;
