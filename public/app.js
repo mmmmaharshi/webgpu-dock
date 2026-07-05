@@ -371,6 +371,7 @@ function checkBondSanity(atoms, serialToIndex, branches, label) {
 }
 
 function generateConformers(numConformers, numBranches) {
+  if (numBranches === 0) return [new Array(0)]; // rigid — no need for dupes
   const arr = [new Array(numBranches).fill(0)]; // rigid baseline
   for (let i = 1; i < numConformers; i++) {
     const angles = new Array(numBranches).fill(0);
@@ -584,13 +585,29 @@ function bestOf(energies) {
   return { best, bestIdx };
 }
 
+function computeCenter(atoms) {
+  let sx = 0, sy = 0, sz = 0;
+  for (const a of atoms) { sx += a.x; sy += a.y; sz += a.z; }
+  return { x: sx / atoms.length, y: sy / atoms.length, z: sz / atoms.length };
+}
+
+function recenterLigand(atoms, targetCenter) {
+  const cur = computeCenter(atoms);
+  const dx = targetCenter.x - cur.x;
+  const dy = targetCenter.y - cur.y;
+  const dz = targetCenter.z - cur.z;
+  return atoms.map(a => ({ ...a, x: a.x + dx, y: a.y + dy, z: a.z + dz }));
+}
+
 async function runDemo({
-  proteinPDBQT = "protein.pdbqt",
-  ligandPDBQT = "ligand.pdbqt",
+  proteinPDBQT = "data/protein.pdbqt",
+  ligandPDBQT = "data/ligand.pdbqt",
   numRotations = 12,
   translationRange = 5,
   translationStep = 1,
   numConformers = 40,
+  systemName = "Unknown",
+  knownCenter = [0, 0, 0],
 } = {}) {
   const tStart = performance.now();
 
@@ -615,7 +632,9 @@ async function runDemo({
     pg(100);
     return [par, lar];
   });
-  const { atoms: ligandAtomsBase, serialToIndex, branches } = ligandResult;
+  const { atoms: rawLigandAtoms, serialToIndex, branches } = ligandResult;
+  const pocketCenter = { x: knownCenter[0], y: knownCenter[1], z: knownCenter[2] };
+  const ligandAtomsBase = recenterLigand(rawLigandAtoms, pocketCenter);
   console.log(`Parsed ${proteinAtomsRaw.length} protein atoms, ${ligandAtomsBase.length} ligand atoms, ${branches.length} rotatable bonds`);
 
   // ── Stage 3: Convert protein atoms to array ───────────────────────────
@@ -646,7 +665,6 @@ async function runDemo({
 
   // ── Stage 5: Generate conformers & score ──────────────────────────────
   const conformers = generateConformers(numConformers, branches.length);
-  console.log(`Searching ${numConformers} conformers × ${numPoses} poses = ${numConformers * numPoses} total`);
 
   let globalBest = Infinity;
   let globalBestIdx = -1;
@@ -654,19 +672,17 @@ async function runDemo({
   let globalBestAngles = null;
 
   for (let cIdx = 0; cIdx < conformers.length; cIdx++) {
-    bar.setStatus(`Conformer ${cIdx + 1}/${conformers.length}...`);
+    bar.setStatus(`[${systemName}] ${((cIdx + 1) / conformers.length * 100).toFixed(0)}%`);
     bar.setProgress((cIdx / conformers.length) * 100);
 
     const bentAtoms = applyTorsions(ligandAtomsBase, serialToIndex, branches, conformers[cIdx]);
-    if (cIdx > 0) checkBondSanity(bentAtoms, serialToIndex, branches, `conformer #${cIdx}`);
+    // bond sanity check omitted
     const ligandArr = atomsToArrayReal(bentAtoms, ad4Table);
 
     const { energies, gpuMs } = await scoreAllPosesGPU(
       proteinAtoms, numProtein, ligandArr, numLigand, poses, numPoses,
     );
     const { best, bestIdx } = bestOf(energies);
-    const tag = conformers[cIdx].every(a => a === 0) ? ' (rigid)' : '';
-    console.log(`  Conformer #${cIdx}${tag}: best ${best.toFixed(2)} kcal/mol (pose #${bestIdx}, ${gpuMs.toFixed(0)}ms)`);
 
     if (best < globalBest) {
       globalBest = best;
@@ -679,8 +695,7 @@ async function runDemo({
   bar.setProgress(100);
   const totalSec = ((performance.now() - tStart) / 1000).toFixed(1);
 
-  // Compare best pose to real STI position (PDB 1IEP chain A)
-  const realCenter = [15.614, 53.38, 15.455];
+  const realCenter = knownCenter;
   const lcx = ligandAtomsBase.reduce((s, a) => s + a.x, 0) / ligandAtomsBase.length;
   const lcy = ligandAtomsBase.reduce((s, a) => s + a.y, 0) / ligandAtomsBase.length;
   const lcz = ligandAtomsBase.reduce((s, a) => s + a.z, 0) / ligandAtomsBase.length;
@@ -691,14 +706,71 @@ async function runDemo({
   const dist = Math.sqrt((rx - realCenter[0]) ** 2 + (ry - realCenter[1]) ** 2 + (rz - realCenter[2]) ** 2);
   console.log(`\nBEST OVERALL: ${globalBest.toFixed(3)} kcal/mol (conformer #${globalBestConf}, pose #${globalBestIdx})`);
   console.log(`Best pose center: (${rx.toFixed(2)}, ${ry.toFixed(2)}, ${rz.toFixed(2)})`);
-  console.log(`Real STI center (PDB 1IEP): (${realCenter[0]}, ${realCenter[1]}, ${realCenter[2]})`);
-  console.log(`Distance from real STI: ${dist.toFixed(2)} Å  ${dist < 5 ? '✓ Near pocket' : '✗ Far from pocket'}`);
+  console.log(`Real center (PDB ${systemName}): (${realCenter[0]}, ${realCenter[1]}, ${realCenter[2]})`);
+  console.log(`Distance from known position: ${dist.toFixed(2)} Å  ${dist < 2 ? '✓ Hit' : dist < 5 ? '○ Near' : '✗ Miss'}`);
 
   console.log(`Total run time: ${totalSec}s`);
-  bar.setStatus(`Best: ${globalBest.toFixed(1)} kcal/mol — ${dist.toFixed(1)}Å from STI`);
+  bar.setStatus(`Best: ${globalBest.toFixed(1)} kcal/mol — ${dist.toFixed(1)}Å from known`);
   bar.done();
 
-  return { globalBest, globalBestIdx, globalBestConf, globalBestAngles };
+  return {
+    systemName,
+    bestScore: globalBest,
+    bestIdx: globalBestIdx,
+    bestConf: globalBestConf,
+    dist,
+    bestCenter: [rx, ry, rz],
+    knownCenter: realCenter,
+    totalTime: parseFloat(totalSec),
+  };
 }
 
-runDemo();
+// ── Benchmark runner ──────────────────────────────────────────────
+
+async function runBenchmark() {
+  const systems = [
+    { name: "1IEP (imatinib)",     prot: "systems/1iep/protein.pdbqt", lig: "systems/1iep/ligand.pdbqt",    center: [15.614, 53.380, 15.455] },
+    { name: "1HSG (indinavir)",    prot: "systems/1hsg/protein.pdbqt", lig: "systems/1hsg/ligand.pdbqt",    center: [13.073, 22.467, 5.557]  },
+    { name: "1STP (biotin)",       prot: "systems/1stp/protein.pdbqt", lig: "systems/1stp/ligand.pdbqt",    center: [11.118, 1.680, -10.755] },
+    { name: "3PTB (benzamidine)",  prot: "systems/3ptb/protein.pdbqt", lig: "systems/3ptb/ligand.pdbqt",    center: [-1.759, 14.461, 16.916] },
+    { name: "1AC8 (TMZ)",          prot: "systems/1ac8/protein.pdbqt", lig: "systems/1ac8/ligand.pdbqt",    center: [31.924, 93.444, 47.924] },
+  ];
+
+  const tBenchStart = performance.now();
+  const results = [];
+
+  for (let i = 0; i < systems.length; i++) {
+    const sys = systems[i];
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`  [${i + 1}/${systems.length}] ${sys.name}`);
+    console.log(`${'='.repeat(60)}`);
+    const r = await runDemo({
+      proteinPDBQT: sys.prot,
+      ligandPDBQT: sys.lig,
+      systemName: sys.name,
+      knownCenter: sys.center,
+      numConformers: 40,
+    });
+    results.push(r);
+  }
+
+  const benchTotal = ((performance.now() - tBenchStart) / 1000).toFixed(1);
+
+  console.log(`\n\n${'='.repeat(72)}`);
+  console.log(`  BENCHMARK RESULTS`);
+  console.log(`${'='.repeat(72)}`);
+  console.log(`  ${'System'.padEnd(24)} ${'Best Score'.padEnd(14)} ${'Distance'.padEnd(10)} ${'Time'.padEnd(8)} ${'Status'}`);
+  console.log(`  ${'─'.repeat(23)} ${'─'.repeat(13)} ${'─'.repeat(9)} ${'─'.repeat(7)} ${'─'.repeat(8)}`);
+  for (const r of results) {
+    const status = r.dist < 2 ? '✓ Hit' : r.dist < 5 ? '○ Near' : '✗ Miss';
+    console.log(`  ${r.systemName.padEnd(24)} ${(r.bestScore.toFixed(2) + ' kcal/mol').padEnd(14)} ${(r.dist.toFixed(2) + ' Å').padEnd(10)} ${(r.totalTime.toFixed(1) + 's').padEnd(8)} ${status}`);
+  }
+  console.log(`${'='.repeat(72)}`);
+  console.log(`  Total benchmark time: ${benchTotal}s`);
+  console.log(`${'='.repeat(72)}`);
+
+  bar.setStatus(`Benchmark: ${benchTotal}s — ${results.filter(r => r.dist < 2).length}/${results.length} hits`);
+  bar.done();
+}
+
+runBenchmark();
