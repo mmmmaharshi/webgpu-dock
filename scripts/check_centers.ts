@@ -25,8 +25,9 @@ const resNames: Record<string, string> = { '1iep': 'STI', '1hsg': 'MK1', '1stp':
 
 for (const name of systems) {
   const pdbText = readFileSync(path.join(systemsDir, name, `${name}.pdb`), 'utf-8');
-  const byChain = extractLigandByChain(pdbText, resNames[name]);
-  console.log(`\n${name} (${resNames[name]}):`);
+  const resName = resNames[name]!;
+  const byChain = extractLigandByChain(pdbText, resName);
+  console.log(`\n${name} (${resName}):`);
   for (const [chain, atoms] of Object.entries(byChain)) {
     const cx = atoms.reduce((s, a) => s + a.x, 0) / atoms.length;
     const cy = atoms.reduce((s, a) => s + a.y, 0) / atoms.length;

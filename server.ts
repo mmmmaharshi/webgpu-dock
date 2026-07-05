@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { ensureData } from './src/download';
 
 const PUBLIC = join(import.meta.dir, 'public');
 const DATA   = join(import.meta.dir, 'data');
@@ -49,4 +50,6 @@ Bun.serve({
   },
 });
 
-console.log(`Open http://localhost:8080 in your browser`);
+ensureData().then(() => {
+  console.log(`Open http://localhost:8080 in your browser`);
+});

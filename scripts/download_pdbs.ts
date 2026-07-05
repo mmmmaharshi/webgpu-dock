@@ -52,11 +52,14 @@ const resNames: Record<string, string> = {
 };
 
 for (const [name] of Object.entries(pdbs)) {
-  const pdbText = await get(pdbs[name]);
-  const info = extractLigandCenters(pdbText, resNames[name]);
+  const url = pdbs[name]!;
+  const resName = resNames[name]!;
+  const pdbText = await get(url);
+  const info = extractLigandCenters(pdbText, resName);
   if (info) {
-    console.log(`\n${name} (${info.resName}): center = (${info.center[0].toFixed(3)}, ${info.center[1].toFixed(3)}, ${info.center[2].toFixed(3)}), ${info.numAtoms} atoms`);
+    const [cx, cy, cz] = info.center;
+    console.log(`\n${name} (${info.resName}): center = (${cx!.toFixed(3)}, ${cy!.toFixed(3)}, ${cz!.toFixed(3)}), ${info.numAtoms} atoms`);
   } else {
-    console.log(`\n${name}: NO LIGAND FOUND for "${resNames[name]}"`);
+    console.log(`\n${name}: NO LIGAND FOUND for "${resName}"`);
   }
 }
