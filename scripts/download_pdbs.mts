@@ -1,12 +1,19 @@
 import { writeFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import path from 'path';
 
-async function get(url) {
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(__dirname, '..', '..');
+const systemsDir = path.join(projectRoot, 'data', 'systems');
+
+async function get(url: string): Promise<string> {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`${resp.status} ${url}`);
   return resp.text();
 }
 
-const pdbs = {
+const pdbs: Record<string, string> = {
   '1iep': 'https://files.rcsb.org/download/1IEP.pdb',
   '1hsg': 'https://files.rcsb.org/download/1HSG.pdb',
   '1stp': 'https://files.rcsb.org/download/1STP.pdb',
@@ -17,13 +24,12 @@ const pdbs = {
 for (const [name, url] of Object.entries(pdbs)) {
   console.log(`Downloading ${name}...`);
   const text = await get(url);
-  writeFileSync(`systems/${name}/${name}.pdb`, text);
+  writeFileSync(path.join(systemsDir, name, `${name}.pdb`), text);
   console.log(`  ${(text.length / 1024).toFixed(0)} KB`);
 }
 
-// Extract ligand centers from PDB HETATM records
-function extractLigandCenters(pdbText, resName) {
-  const atoms = [];
+function extractLigandCenters(pdbText: string, resName: string): { center: number[]; numAtoms: number; resName: string } | null {
+  const atoms: { x: number; y: number; z: number }[] = [];
   for (const line of pdbText.split('\n')) {
     if (!line.startsWith('HETATM')) continue;
     const rName = line.slice(17, 20).trim();
@@ -40,15 +46,16 @@ function extractLigandCenters(pdbText, resName) {
   return { center: [cx, cy, cz], numAtoms: atoms.length, resName };
 }
 
+const resNames: Record<string, string> = {
+  '1iep': 'STI',
+  '1hsg': 'MK1',
+  '1stp': 'BTN',
+  '3ptb': 'BEN',
+  '1ac8': 'TMZ',
+};
+
 for (const [name] of Object.entries(pdbs)) {
   const pdbText = await get(pdbs[name]);
-  const resNames = {
-    '1iep': 'STI',
-    '1hsg': 'MK1',
-    '1stp': 'BTN',
-    '3ptb': 'BEN',
-    '1ac8': 'TMZ',
-  };
   const info = extractLigandCenters(pdbText, resNames[name]);
   if (info) {
     console.log(`\n${name} (${info.resName}): center = (${info.center[0].toFixed(3)}, ${info.center[1].toFixed(3)}, ${info.center[2].toFixed(3)}), ${info.numAtoms} atoms`);

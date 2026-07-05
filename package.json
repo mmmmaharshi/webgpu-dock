@@ -1,0 +1,18 @@
+{
+  "name": "webgpu-dock",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebGPU molecular docking",
+  "scripts": {
+    "build": "tsc && copyfiles -f public/index.html dist/public/",
+    "start": "node dist/server.js",
+    "dev": "tsc && node dist/server.js",
+    "clean": "rd /s /q dist"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@webgpu/types": "^0.1.71",
+    "copyfiles": "^2.4.1",
+    "typescript": "^5.7.0"
+  }
+}

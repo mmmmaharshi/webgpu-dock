@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "lib": ["ES2022", "DOM"],
+    "types": ["node", "@webgpu/types"],
+    "sourceMap": true,
+    "declaration": false
+  },
+  "include": ["server.ts", "public/app.ts", "scripts/*.mts"],
+  "exclude": ["node_modules", "dist", "data", "logs"]
+}

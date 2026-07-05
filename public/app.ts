@@ -1,30 +1,84 @@
+interface Atom { x: number; y: number; z: number; charge: number; atomType: string }
+
+interface LigandAtom { serial: number; x: number; y: number; z: number; charge: number; atomType: string }
+
+interface Branch {
+  parentSerial: number;
+  childSerial: number;
+  indices: Set<number>;
+  openOrder: number;
+}
+
+interface LigandResult {
+  atoms: LigandAtom[];
+  serialToIndex: Record<number, number>;
+  branches: Branch[];
+}
+
+interface AD4Params { Rii: number; epsii: number }
+
+interface PoseSet {
+  poses: Float32Array;
+  numPoses: number;
+  numRotations: number;
+  numTranslations: number;
+}
+
+interface BenchResult {
+  systemName: string;
+  bestScore: number;
+  bestIdx: number;
+  bestConf: number;
+  dist: number;
+  bestCenter: number[];
+  knownCenter: number[];
+  totalTime: number;
+}
+
+interface DemoOptions {
+  proteinPDBQT?: string;
+  ligandPDBQT?: string;
+  numRotations?: number;
+  translationRange?: number;
+  translationStep?: number;
+  numConformers?: number;
+  systemName?: string;
+  knownCenter?: number[];
+}
+
+interface ProgressBar {
+  setStatus(msg: string): void;
+  setProgress(pct: number): void;
+  done(): void;
+  run<T>(initialStatus: string, fn: (pg: (pct: number) => void, st: (msg: string) => void) => Promise<T>): Promise<T>;
+}
+
 // Redirect console output to the #log element on the page
 {
-  const el = () => document.getElementById('log');
+  const el = (): HTMLElement | null => document.getElementById('log');
   const { log: origLog, warn: origWarn } = console;
-  console.log = (...args) => {
+  console.log = (...args: unknown[]) => {
     origLog(...args);
     const d = el();
     if (d) d.textContent += args.join(' ') + '\n';
   };
-  console.warn = (...args) => {
+  console.warn = (...args: unknown[]) => {
     origWarn(...args);
     const d = el();
     if (d) d.innerHTML += `<span class="warn">${args.join(' ')}</span>\n`;
   };
 }
 
-// Simple progress bar controller
-const bar = (() => {
-  const fill  = () => document.getElementById('bar-fill');
-  const label = () => document.getElementById('bar-label');
-  const statusEl = () => document.getElementById('status');
+const bar: ProgressBar = (() => {
+  const fill  = () => document.getElementById('bar-fill') as HTMLDivElement | null;
+  const label = () => document.getElementById('bar-label') as HTMLDivElement | null;
+  const statusEl = () => document.getElementById('status') as HTMLDivElement | null;
   return {
-    setStatus(msg) {
+    setStatus(msg: string) {
       const s = statusEl();
       if (s) s.textContent = msg;
     },
-    setProgress(pct) {
+    setProgress(pct: number) {
       const f = fill(), l = label();
       if (f) f.style.width = Math.min(pct, 100) + '%';
       if (l) l.textContent = Math.floor(Math.min(pct, 100)) + '%';
@@ -33,13 +87,12 @@ const bar = (() => {
       this.setProgress(100);
       this.setStatus('Done');
     },
-    /** Run an async operation with progress reporting – fn receives (setProgress, setStatus) */
-    async run(initialStatus, fn) {
+    async run<T>(initialStatus: string, fn: (pg: (pct: number) => void, st: (msg: string) => void) => Promise<T>): Promise<T> {
       this.setStatus(initialStatus);
       this.setProgress(0);
       const result = await fn(
-        (pct) => this.setProgress(pct),
-        (msg) => this.setStatus(msg),
+        (pct: number) => this.setProgress(pct),
+        (msg: string) => this.setStatus(msg),
       );
       return result;
     },
@@ -130,8 +183,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // PDBQT parser — extracts real coords, Gasteiger charges, AutoDock types
 // ---------------------------------------------------------------------------
 
-function parsePDBQT(text) {
-  const atoms = [];
+function parsePDBQT(text: string): Atom[] {
+  const atoms: Atom[] = [];
   for (const line of text.split("\n")) {
     const record = line.slice(0, 6).trim();
     if (record !== "ATOM" && record !== "HETATM") continue;
@@ -151,11 +204,11 @@ function parsePDBQT(text) {
 // Ligand PDBQT parser — preserves BRANCH/ENDBRANCH torsion tree
 // ---------------------------------------------------------------------------
 
-function parseLigandPDBQT(text) {
-  const atoms = [];
-  const serialToIndex = {};
-  const branches = [];
-  const stack = [];
+function parseLigandPDBQT(text: string): LigandResult {
+  const atoms: LigandAtom[] = [];
+  const serialToIndex: Record<number, number> = {};
+  const branches: Branch[] = [];
+  const stack: Branch[] = [];
   let openCounter = 0;
 
   for (const rawLine of text.split("\n")) {
@@ -178,7 +231,7 @@ function parseLigandPDBQT(text) {
       for (const b of stack) b.indices.add(idx);
     } else if (tag === "BRANCH") {
       const parts = trimmed.split(/\s+/);
-      const branch = {
+      const branch: Branch = {
         parentSerial: parseInt(parts[1], 10),
         childSerial: parseInt(parts[2], 10),
         indices: new Set(),
@@ -199,11 +252,11 @@ function parseLigandPDBQT(text) {
 // Load real AD4 vdW parameters from AutoDock's public parameter file
 // ---------------------------------------------------------------------------
 
-async function loadAD4Params() {
+async function loadAD4Params(): Promise<Record<string, AD4Params>> {
   const url =
     "https://raw.githubusercontent.com/ccsb-scripps/AutoDock-Vina/develop/data/AD4_parameters.dat";
   const text = await fetch(url).then((r) => r.text());
-  const table = {};
+  const table: Record<string, AD4Params> = {};
   for (const line of text.split("\n")) {
     if (!line.startsWith("atom_par")) continue;
     const parts = line.trim().split(/\s+/);
@@ -219,7 +272,7 @@ async function loadAD4Params() {
 // Convert parsed atoms + AD4 table → flat Float32Array (stride 6)
 // ---------------------------------------------------------------------------
 
-function atomsToArrayReal(atoms, ad4Table) {
+function atomsToArrayReal(atoms: Atom[], ad4Table: Record<string, AD4Params>): Float32Array {
   const arr = new Float32Array(atoms.length * 6);
   atoms.forEach((a, i) => {
     const params = ad4Table[a.atomType];
@@ -247,7 +300,7 @@ function atomsToArrayReal(atoms, ad4Table) {
 // Uniform over SO(3) (Marsaglia / Shoemake method).
 // ---------------------------------------------------------------------------
 
-function randomUnitQuaternion() {
+function randomUnitQuaternion(): [number, number, number, number] {
   const u1 = Math.random(),
     u2 = Math.random(),
     u3 = Math.random();
@@ -260,8 +313,7 @@ function randomUnitQuaternion() {
   return [x, y, z, w];
 }
 
-function quatToMatrix(x, y, z, w) {
-  // row-major 3x3
+function quatToMatrix(x: number, y: number, z: number, w: number): number[] {
   return [
     1 - 2 * (y * y + z * z),
     2 * (x * y - w * z),
@@ -275,9 +327,8 @@ function quatToMatrix(x, y, z, w) {
   ];
 }
 
-function generateRotations(numRotations) {
-  const mats = [];
-  // always include identity so "no rotation" is in the search space
+function generateRotations(numRotations: number): number[][] {
+  const mats: number[][] = [];
   mats.push([1, 0, 0, 0, 1, 0, 0, 0, 1]);
   for (let i = 1; i < numRotations; i++) {
     const [x, y, z, w] = randomUnitQuaternion();
@@ -290,10 +341,10 @@ function generateRotations(numRotations) {
 // Pose set: every rotation x every translation on a grid.
 // ---------------------------------------------------------------------------
 
-function buildPoses(numRotations, translationRange, translationStep) {
+function buildPoses(numRotations: number, translationRange: number, translationStep: number): PoseSet {
   const rotations = generateRotations(numRotations);
 
-  const coords = [];
+  const coords: number[] = [];
   for (let v = -translationRange; v <= translationRange; v += translationStep)
     coords.push(v);
 
@@ -324,7 +375,12 @@ function buildPoses(numRotations, translationRange, translationStep) {
 // Torsion search helpers
 // ---------------------------------------------------------------------------
 
-function rotateAroundAxis(px, py, pz, ax, ay, az, dx, dy, dz, angle) {
+function rotateAroundAxis(
+  px: number, py: number, pz: number,
+  ax: number, ay: number, az: number,
+  dx: number, dy: number, dz: number,
+  angle: number,
+): [number, number, number] {
   const vx = px - ax, vy = py - ay, vz = pz - az;
   const cosA = Math.cos(angle), sinA = Math.sin(angle);
   const dot = vx * dx + vy * dy + vz * dz;
@@ -338,9 +394,14 @@ function rotateAroundAxis(px, py, pz, ax, ay, az, dx, dy, dz, angle) {
   ];
 }
 
-function applyTorsions(atoms, serialToIndex, branches, angles) {
+function applyTorsions(
+  atoms: LigandAtom[],
+  serialToIndex: Record<number, number>,
+  branches: Branch[],
+  angles: number[],
+): LigandAtom[] {
   const coords = atoms.map(a => ({ x: a.x, y: a.y, z: a.z }));
-  branches.forEach((branch, i) => {
+  branches.forEach((branch: Branch, i: number) => {
     const angle = angles[i];
     if (!angle) return;
     const pIdx = serialToIndex[branch.parentSerial];
@@ -360,7 +421,7 @@ function applyTorsions(atoms, serialToIndex, branches, angles) {
   return atoms.map((a, i) => ({ ...a, x: coords[i].x, y: coords[i].y, z: coords[i].z }));
 }
 
-function checkBondSanity(atoms, serialToIndex, branches, label) {
+function checkBondSanity(atoms: LigandAtom[], serialToIndex: Record<number, number>, branches: Branch[], label: string): void {
   for (const branch of branches) {
     const pIdx = serialToIndex[branch.parentSerial];
     const cIdx = serialToIndex[branch.childSerial];
@@ -370,13 +431,13 @@ function checkBondSanity(atoms, serialToIndex, branches, label) {
   }
 }
 
-function generateConformers(numConformers, numBranches) {
+function generateConformers(numConformers: number, numBranches: number): number[][] {
   if (numBranches === 0) return [new Array(0)]; // rigid — no need for dupes
-  const arr = [new Array(numBranches).fill(0)]; // rigid baseline
+  const arr: number[][] = [new Array(numBranches).fill(0)]; // rigid baseline
   for (let i = 1; i < numConformers; i++) {
     const angles = new Array(numBranches).fill(0);
     const numBondsToMove = 1 + Math.floor(Math.random() * 3); // 1-3 bonds
-    const chosenBonds = new Set();
+    const chosenBonds = new Set<number>();
     while (chosenBonds.size < numBondsToMove) {
       chosenBonds.add(Math.floor(Math.random() * numBranches));
     }
@@ -393,14 +454,14 @@ function generateConformers(numConformers, numBranches) {
 // ---------------------------------------------------------------------------
 
 function scoreAllPosesCPU(
-  proteinAtoms,
-  numProtein,
-  ligandAtoms,
-  numLigand,
-  poses,
-  numPoses,
-  onProgress,
-) {
+  proteinAtoms: Float32Array,
+  numProtein: number,
+  ligandAtoms: Float32Array,
+  numLigand: number,
+  poses: Float32Array,
+  numPoses: number,
+  onProgress?: (pct: number) => void,
+): Float32Array {
   const energies = new Float32Array(numPoses);
   const reportEvery = Math.max(1, Math.floor(numPoses / 50));
 
@@ -472,10 +533,10 @@ function scoreAllPosesCPU(
 // GPU pass
 // ---------------------------------------------------------------------------
 
-let _device = null;
-let _pipeline = null;
+let _device: GPUDevice | null = null;
+let _pipeline: GPUComputePipeline | null = null;
 
-async function ensureDevice() {
+async function ensureDevice(): Promise<GPUDevice> {
   if (_device) return _device;
   if (!("gpu" in navigator))
     throw new Error("WebGPU not available in this browser.");
@@ -486,13 +547,13 @@ async function ensureDevice() {
 }
 
 async function scoreAllPosesGPU(
-  proteinAtoms,
-  numProtein,
-  ligandAtoms,
-  numLigand,
-  poses,
-  numPoses,
-) {
+  proteinAtoms: Float32Array,
+  numProtein: number,
+  ligandAtoms: Float32Array,
+  numLigand: number,
+  poses: Float32Array,
+  numPoses: number,
+): Promise<{ energies: Float32Array; gpuMs: number }> {
   const device = await ensureDevice();
 
   if (!_pipeline) {
@@ -528,9 +589,9 @@ async function scoreAllPosesGPU(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  device.queue.writeBuffer(proteinBuf, 0, proteinAtoms);
-  device.queue.writeBuffer(ligandBuf, 0, ligandAtoms);
-  device.queue.writeBuffer(posesBuf, 0, poses);
+  device.queue.writeBuffer(proteinBuf, 0, proteinAtoms.buffer);
+  device.queue.writeBuffer(ligandBuf, 0, ligandAtoms.buffer);
+  device.queue.writeBuffer(posesBuf, 0, poses.buffer);
   device.queue.writeBuffer(
     paramsBuf,
     0,
@@ -573,7 +634,7 @@ async function scoreAllPosesGPU(
 // Demo runner — prints to console
 // ---------------------------------------------------------------------------
 
-function bestOf(energies) {
+function bestOf(energies: Float32Array): { best: number; bestIdx: number } {
   let best = Infinity,
     bestIdx = -1;
   for (let i = 0; i < energies.length; i++) {
@@ -585,13 +646,13 @@ function bestOf(energies) {
   return { best, bestIdx };
 }
 
-function computeCenter(atoms) {
+function computeCenter(atoms: Atom[]): { x: number; y: number; z: number } {
   let sx = 0, sy = 0, sz = 0;
   for (const a of atoms) { sx += a.x; sy += a.y; sz += a.z; }
   return { x: sx / atoms.length, y: sy / atoms.length, z: sz / atoms.length };
 }
 
-function recenterLigand(atoms, targetCenter) {
+function recenterLigand(atoms: LigandAtom[], targetCenter: { x: number; y: number; z: number }): LigandAtom[] {
   const cur = computeCenter(atoms);
   const dx = targetCenter.x - cur.x;
   const dy = targetCenter.y - cur.y;
@@ -608,7 +669,7 @@ async function runDemo({
   numConformers = 40,
   systemName = "Unknown",
   knownCenter = [0, 0, 0],
-} = {}) {
+}: DemoOptions = {}): Promise<BenchResult | undefined> {
   const tStart = performance.now();
 
   // ── Stage 1: Load AD4 params ──────────────────────────────────────────
@@ -727,7 +788,7 @@ async function runDemo({
 
 // ── Benchmark runner ──────────────────────────────────────────────
 
-async function runBenchmark() {
+async function runBenchmark(): Promise<void> {
   const systems = [
     { name: "1IEP (imatinib)",     prot: "systems/1iep/protein.pdbqt", lig: "systems/1iep/ligand.pdbqt",    center: [15.614, 53.380, 15.455] },
     { name: "1HSG (indinavir)",    prot: "systems/1hsg/protein.pdbqt", lig: "systems/1hsg/ligand.pdbqt",    center: [13.073, 22.467, 5.557]  },
@@ -737,7 +798,7 @@ async function runBenchmark() {
   ];
 
   const tBenchStart = performance.now();
-  const results = [];
+  const results: BenchResult[] = [];
 
   for (let i = 0; i < systems.length; i++) {
     const sys = systems[i];
@@ -751,7 +812,7 @@ async function runBenchmark() {
       knownCenter: sys.center,
       numConformers: 40,
     });
-    results.push(r);
+    if (r) results.push(r);
   }
 
   const benchTotal = ((performance.now() - tBenchStart) / 1000).toFixed(1);

@@ -1,3 +1,5 @@
 logs/
 *.log
 *.err
+dist/
+node_modules/

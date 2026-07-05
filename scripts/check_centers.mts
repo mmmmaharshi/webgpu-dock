@@ -1,7 +1,14 @@
 import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import path from 'path';
 
-function extractLigandByChain(pdbText, resName) {
-  const atomsByChain = {};
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(__dirname, '..', '..');
+const systemsDir = path.join(projectRoot, 'data', 'systems');
+
+function extractLigandByChain(pdbText: string, resName: string): Record<string, { x: number; y: number; z: number }[]> {
+  const atomsByChain: Record<string, { x: number; y: number; z: number }[]> = {};
   for (const line of pdbText.split('\n')) {
     if (!line.startsWith('HETATM')) continue;
     const rName = line.slice(17, 20).trim();
@@ -17,10 +24,10 @@ function extractLigandByChain(pdbText, resName) {
 }
 
 const systems = ['1iep', '1hsg', '1stp', '3ptb', '1ac8'];
-const resNames = { '1iep': 'STI', '1hsg': 'MK1', '1stp': 'BTN', '3ptb': 'BEN', '1ac8': 'TMZ' };
+const resNames: Record<string, string> = { '1iep': 'STI', '1hsg': 'MK1', '1stp': 'BTN', '3ptb': 'BEN', '1ac8': 'TMZ' };
 
 for (const name of systems) {
-  const pdbText = readFileSync(`systems/${name}/${name}.pdb`, 'utf-8');
+  const pdbText = readFileSync(path.join(systemsDir, name, `${name}.pdb`), 'utf-8');
   const byChain = extractLigandByChain(pdbText, resNames[name]);
   console.log(`\n${name} (${resNames[name]}):`);
   for (const [chain, atoms] of Object.entries(byChain)) {
