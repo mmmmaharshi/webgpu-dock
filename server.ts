@@ -1,11 +1,9 @@
-import http, { IncomingMessage, ServerResponse } from 'http';
-import fs from 'fs';
-import path from 'path';
+import { join } from 'path';
 
-const PUBLIC = path.join(__dirname, 'public');
-const DATA   = path.join(__dirname, '..', 'data');
+const PUBLIC = join(import.meta.dir, 'public');
+const DATA   = join(import.meta.dir, 'data');
 
-const types: Record<string, string> = {
+const MIME: Record<string, string> = {
   '.html': 'text/html',
   '.js':   'application/javascript',
   '.pdbqt': 'text/plain',
@@ -13,41 +11,42 @@ const types: Record<string, string> = {
   '.dat':  'text/plain',
 };
 
-const server = http.createServer((req: IncomingMessage, res: ServerResponse) => {
-  let url = req.url === '/' ? '/index.html' : decodeURIComponent(req.url ?? '');
+Bun.serve({
+  port: 8080,
 
-  let file: string;
-  if (url.startsWith('/systems/')) {
-    file = path.join(DATA, url);
-  } else if (url.startsWith('/data/')) {
-    file = path.join(DATA, url.slice(5));
-  } else {
-    file = path.join(PUBLIC, url);
-  }
+  async fetch(req: Request) {
+    const url = new URL(req.url);
+    let pathname = url.pathname === '/' ? '/index.html' : url.pathname;
 
-  if (!file.startsWith(PUBLIC) && !file.startsWith(DATA)) {
-    res.writeHead(403); res.end('Forbidden'); return;
-  }
+    let filePath: string;
+    if (pathname.startsWith('/systems/')) {
+      filePath = join(DATA, pathname);
+    } else if (pathname.startsWith('/data/')) {
+      filePath = join(DATA, pathname.slice(5));
+    } else {
+      filePath = join(PUBLIC, pathname);
+    }
 
-  fs.readFile(file, (err: NodeJS.ErrnoException | null, data: Buffer) => {
-    if (err) { res.writeHead(404); res.end('Not found'); return; }
-    res.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'text/plain' });
-    res.end(data);
-  });
+    if (!filePath.startsWith(PUBLIC) && !filePath.startsWith(DATA)) {
+      return new Response('Forbidden', { status: 403 });
+    }
+
+    const f = Bun.file(filePath);
+    const exists = await f.exists();
+    if (!exists) {
+      return new Response('Not found', { status: 404 });
+    }
+
+    const ext = filePath.substring(filePath.lastIndexOf('.'));
+    const type = MIME[ext] ?? 'application/octet-stream';
+
+    return new Response(f, { headers: { 'Content-Type': type } });
+  },
+
+  error(err: Error) {
+    console.error(err);
+    return new Response('Internal Server Error', { status: 500 });
+  },
 });
 
-function tryListen(port: number): void {
-  server.listen(port, () => {
-    console.log(`Open http://localhost:${port} in your browser`);
-  });
-  server.on('error', (e: NodeJS.ErrnoException) => {
-    if (e.code === 'EADDRINUSE') {
-      console.log(`Port ${port} in use, trying ${port + 1}`);
-      tryListen(port + 1);
-    } else {
-      throw e;
-    }
-  });
-}
-
-tryListen(8080);
+console.log(`Open http://localhost:8080 in your browser`);

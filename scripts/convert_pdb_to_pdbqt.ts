@@ -1,10 +1,7 @@
 import { readFileSync, writeFileSync } from 'fs';
-import { fileURLToPath } from 'url';
 import path from 'path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const projectRoot = path.resolve(__dirname, '..', '..');
+const projectRoot = path.resolve(import.meta.dir, '..', '..');
 
 const ELEM_TO_AD4: Record<string, string> = {
   'C': 'A',

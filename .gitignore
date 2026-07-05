@@ -3,3 +3,5 @@ logs/
 *.err
 dist/
 node_modules/
+public/app.js
+public/app.js.map
