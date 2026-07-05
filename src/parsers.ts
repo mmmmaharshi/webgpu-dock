@@ -1,6 +1,30 @@
 import type { Atom, AD4Params, LigandAtom, Branch, LigandResult } from "./types";
 import { RII_TO_SIGMA } from "./constants";
 
+// Charge and atom-type are supposed to live in fixed columns (70-76 and
+// 77-79), but some PDBQT files in the wild (e.g. this repo's
+// data/systems/3ptb/protein.pdbqt) drop the separating space between them,
+// e.g. "-0.250OA" instead of "-0.250 OA". A fixed-offset slice silently
+// misreads those as charge="-0.250" type="A" (losing the O), which
+// mistypes every affected atom as generic carbon instead of an H-bond
+// oxygen/nitrogen/sulfur and quietly corrupts the whole energy landscape.
+// Parse the tail of the line by pattern instead of fixed offset so this is
+// robust to missing padding: AutoDock atom types are always 1-2 letters
+// (A, C, N, NA, OA, SA, HD, Cl, Fe, ...) with no digits, so match the
+// trailing (charge)(type) pair directly.
+const CHARGE_TYPE_RE = /(-?\d+\.?\d*)\s*([A-Za-z]{1,2})\s*$/;
+
+function parseChargeAndType(line: string): { charge: number; atomType: string } {
+  const tail = line.slice(54).trimEnd();
+  const m = tail.match(CHARGE_TYPE_RE);
+  if (m) return { charge: parseFloat(m[1]), atomType: m[2] };
+  // Fallback to the old fixed-column behavior if the pattern doesn't match.
+  return {
+    charge: parseFloat(line.slice(70, 76)),
+    atomType: line.slice(77, 79).trim(),
+  };
+}
+
 export function parsePDBQT(text: string): Atom[] {
   const atoms: Atom[] = [];
   for (const line of text.split("\n")) {
@@ -10,8 +34,7 @@ export function parsePDBQT(text: string): Atom[] {
     const x = parseFloat(line.slice(30, 38));
     const y = parseFloat(line.slice(38, 46));
     const z = parseFloat(line.slice(46, 54));
-    const charge = parseFloat(line.slice(70, 76));
-    const atomType = line.slice(77, 79).trim();
+    const { charge, atomType } = parseChargeAndType(line);
 
     atoms.push({ x, y, z, charge, atomType });
   }
@@ -35,8 +58,7 @@ export function parseLigandPDBQT(text: string): LigandResult {
       const x = parseFloat(rawLine.slice(30, 38));
       const y = parseFloat(rawLine.slice(38, 46));
       const z = parseFloat(rawLine.slice(46, 54));
-      const charge = parseFloat(rawLine.slice(70, 76));
-      const atomType = rawLine.slice(77, 79).trim();
+      const { charge, atomType } = parseChargeAndType(rawLine);
 
       const idx = atoms.length;
       atoms.push({ serial, x, y, z, charge, atomType });
@@ -63,43 +85,3 @@ export function parseLigandPDBQT(text: string): LigandResult {
 }
 
 export async function loadAD4Params(): Promise<Record<string, AD4Params>> {
-  const url =
-    "https://raw.githubusercontent.com/ccsb-scripps/AutoDock-Vina/develop/data/AD4_parameters.dat";
-  const text = await fetch(url).then((r) => r.text());
-  const table: Record<string, AD4Params> = {};
-  for (const line of text.split("\n")) {
-    if (!line.startsWith("atom_par")) continue;
-    const parts = line.trim().split(/\s+/);
-    table[parts[1]] = {
-      Rii: parseFloat(parts[2]),
-      epsii: parseFloat(parts[3]),
-    };
-  }
-  return table;
-}
-
-export function atomsToArrayReal(
-  atoms: Atom[],
-  ad4Table: Record<string, AD4Params>,
-): Float32Array {
-  const arr = new Float32Array(atoms.length * 6);
-  atoms.forEach((a, i) => {
-    const params = ad4Table[a.atomType];
-    if (!params) {
-      console.warn(
-        `No AD4 param for atom type "${a.atomType}", using generic carbon fallback`,
-      );
-    }
-    const Rii = params ? params.Rii : 4.0;
-    const epsii = params ? params.epsii : 0.15;
-
-    const base = i * 6;
-    arr[base] = a.x;
-    arr[base + 1] = a.y;
-    arr[base + 2] = a.z;
-    arr[base + 3] = a.charge;
-    arr[base + 4] = Rii * RII_TO_SIGMA;
-    arr[base + 5] = epsii;
-  });
-  return arr;
-}

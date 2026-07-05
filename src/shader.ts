@@ -14,6 +14,18 @@ struct Params {
 
 const COULOMB_K: f32 = 332.0636;
 
+// Mehler-Solmajer distance-dependent dielectric (AutoDock4's default
+// electrostatics model). Must match src/scoring.ts's CPU dielectric()
+// exactly, or the GPU search and CPU diagnostics will disagree.
+const DIELECTRIC_A: f32 = -8.5525;
+const DIELECTRIC_B: f32 = 86.9525;
+const DIELECTRIC_LAMBDA: f32 = 0.003627;
+const DIELECTRIC_K: f32 = 7.7839;
+
+fn dielectric(r: f32) -> f32 {
+  return DIELECTRIC_A + DIELECTRIC_B / (1.0 + DIELECTRIC_K * exp(-DIELECTRIC_LAMBDA * DIELECTRIC_B * r));
+}
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let poseIdx = gid.x;
@@ -28,6 +40,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let tx = poses[base + 9u]; let ty = poses[base + 10u]; let tz = poses[base + 11u];
 
   var totalEnergy: f32 = 0.0;
+  var clashCount: u32 = 0u;
 
   for (var i: u32 = 0u; i < params.numLigand; i = i + 1u) {
     let lBase = i * 6u;
@@ -51,22 +64,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       let pSigma  = proteinAtoms[qBase + 4u];
       let pEps    = proteinAtoms[qBase + 5u];
 
-      let r2v = max(dx * dx + dy * dy + dz * dz, 0.01);
-      let r  = sqrt(r2v);
-
-      let sigma   = 0.5 * (lSigma + pSigma);
-      let epsilon = sqrt(lEps * pEps);
-      let sr6  = pow(sigma / r, 6.0);
-      let sr12 = sr6 * sr6;
-      var lj = 4.0 * epsilon * (sr12 - sr6);
-      lj = min(lj, 1e6);
-
-      let coulomb = COULOMB_K * lCharge * pCharge / r;
-
-      totalEnergy = totalEnergy + lj + coulomb;
-    }
-  }
-
-  energies[poseIdx] = totalEnergy;
-}
-`;
+      let r2 = dx * dx + dy * dy + dz * dz;
+      if (r2 < 1.0) { clashCount = clashCount + 1u; }
+      let r2v = max(r2, 1.0);
+  

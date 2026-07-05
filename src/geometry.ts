@@ -29,6 +29,12 @@ export function quatToMatrix(x: number, y: number, z: number, w: number): number
 
 export function generateRotations(numRotations: number): number[][] {
   const mats: number[][] = [];
+  // Seed the identity orientation first. The input ligand geometry is often
+  // already close to (or exactly) the bound/native orientation (e.g. when
+  // docking a ligand extracted from its own co-crystal structure), so
+  // always including "no rotation" as a candidate costs nothing and can be
+  // the difference between finding the correct pose and missing it, since
+  // the rest of the set is random and may not sample anywhere near it.
   mats.push([1, 0, 0, 0, 1, 0, 0, 0, 1]);
   for (let i = 1; i < numRotations; i++) {
     const [x, y, z, w] = randomUnitQuaternion();
@@ -37,10 +43,56 @@ export function generateRotations(numRotations: number): number[][] {
   return mats;
 }
 
+// --- 3x3 rotation matrix helpers, used for Monte Carlo orientation refinement ---
+
+export function axisAngleToMatrix(
+  ax: number,
+  ay: number,
+  az: number,
+  angle: number,
+): number[] {
+  const c = Math.cos(angle),
+    s = Math.sin(angle),
+    t = 1 - c;
+  return [
+    t * ax * ax + c, t * ax * ay - s * az, t * ax * az + s * ay,
+    t * ax * ay + s * az, t * ay * ay + c, t * ay * az - s * ax,
+    t * ax * az - s * ay, t * ay * az + s * ax, t * az * az + c,
+  ];
+}
+
+// Random small rotation about a uniformly random axis, angle drawn from
+// [-maxAngleRad, +maxAngleRad]. Used to perturb an existing orientation
+// during simulated-annealing style local refinement.
+export function randomSmallRotation(maxAngleRad: number): number[] {
+  const theta = Math.random() * 2 * Math.PI;
+  const z = Math.random() * 2 - 1;
+  const r = Math.sqrt(Math.max(0, 1 - z * z));
+  const ax = r * Math.cos(theta),
+    ay = r * Math.sin(theta),
+    az = z;
+  const angle = (Math.random() * 2 - 1) * maxAngleRad;
+  return axisAngleToMatrix(ax, ay, az, angle);
+}
+
+// Row-major 3x3 matrix multiply: returns a*b.
+export function multiplyMatrices3(a: number[], b: number[]): number[] {
+  const r = new Array(9).fill(0);
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      let s = 0;
+      for (let k = 0; k < 3; k++) s += a[i * 3 + k] * b[k * 3 + j];
+      r[i * 3 + j] = s;
+    }
+  }
+  return r;
+}
+
 export function buildPoses(
   numRotations: number,
   translationRange: number,
   translationStep: number,
+  pocketCenter: { x: number; y: number; z: number },
 ): PoseSet {
   const rotations = generateRotations(numRotations);
 
@@ -59,9 +111,9 @@ export function buildPoses(
         for (const tz of coords) {
           const base = poseIdx * 12;
           poses.set(R, base);
-          poses[base + 9] = tx;
-          poses[base + 10] = ty;
-          poses[base + 11] = tz;
+          poses[base + 9] = pocketCenter.x + tx;
+          poses[base + 10] = pocketCenter.y + ty;
+          poses[base + 11] = pocketCenter.z + tz;
           poseIdx++;
         }
       }
@@ -191,6 +243,11 @@ export function generateConformers(
     arr.push(angles);
   }
   return arr;
+}
+
+export function toLocalOrigin(atoms: LigandAtom[]): LigandAtom[] {
+  const c = computeCenter(atoms);
+  return atoms.map((a) => ({ ...a, x: a.x - c.x, y: a.y - c.y, z: a.z - c.z }));
 }
 
 export function computeCenter(atoms: { x: number; y: number; z: number }[]): {
