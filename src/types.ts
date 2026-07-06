@@ -54,8 +54,6 @@ export interface BenchResult {
 export interface DemoOptions {
   proteinPDBQT?: string;
   ligandPDBQT?: string;
-  proteinPDB?: string;
-  ligandResName?: string;
   numRotations?: number;
   translationRange?: number;
   translationStep?: number;

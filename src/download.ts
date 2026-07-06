@@ -26,7 +26,6 @@ interface SystemDef {
   name: string;
   protUrl?: string;
   ligUrl?: string;
-  pdbUrl?: string;
 }
 
 const SYSTEMS: SystemDef[] = [
@@ -59,8 +58,25 @@ const SYSTEMS: SystemDef[] = [
       "https://raw.githubusercontent.com/ccsb-scripps/AutoDock-GPU/develop/input/1ac8/derived/1ac8_ligand.pdbqt",
   },
   {
-    name: "3ptb",
-    pdbUrl: "https://files.rcsb.org/download/3PTB.pdb",
+    name: "3ce3",
+    protUrl:
+      "https://raw.githubusercontent.com/ccsb-scripps/AutoDock-GPU/develop/input/3ce3/derived/3ce3_protein.pdbqt",
+    ligUrl:
+      "https://raw.githubusercontent.com/ccsb-scripps/AutoDock-GPU/develop/input/3ce3/derived/3ce3_ligand.pdbqt",
+  },
+  {
+    name: "3tmn",
+    protUrl:
+      "https://raw.githubusercontent.com/ccsb-scripps/AutoDock-GPU/develop/input/3tmn/derived/rec.pdbqt",
+    ligUrl:
+      "https://raw.githubusercontent.com/ccsb-scripps/AutoDock-GPU/develop/input/3tmn/derived/3tmn_ligand.pdbqt",
+  },
+  {
+    name: "7cpa",
+    protUrl:
+      "https://raw.githubusercontent.com/ccsb-scripps/AutoDock-GPU/develop/input/7cpa/derived/rec.pdbqt",
+    ligUrl:
+      "https://raw.githubusercontent.com/ccsb-scripps/AutoDock-GPU/develop/input/7cpa/derived/7cpa_ligand.pdbqt",
   },
 ];
 
@@ -76,15 +92,6 @@ export async function ensureData(): Promise<void> {
     }
     if (sys.ligUrl) {
       await ensureFile(path.join(sysDir, "ligand.pdbqt"), sys.ligUrl);
-    }
-    if (sys.pdbUrl) {
-      const pdbPath = path.join(sysDir, `${sys.name}.pdb`);
-      if (!existsSync(pdbPath)) {
-        console.log(`  Downloading ${sys.name}.pdb...`);
-        const pdbText = await fetchText(sys.pdbUrl);
-        writeFileSync(pdbPath, pdbText);
-        console.log(`    -> ${(pdbText.length / 1024).toFixed(0)} KB`);
-      }
     }
   }
 

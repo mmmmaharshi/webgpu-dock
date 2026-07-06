@@ -1,5 +1,5 @@
 import { COULOMB_K, DIELECTRIC_A, DIELECTRIC_B, DIELECTRIC_LAMBDA, DIELECTRIC_K } from "./constants";
-import { SHADER_SRC } from "./shader";
+import { SHADER_SRC, SHADER_GRID_SRC } from "./shader";
 
 // Mehler-Solmajer distance-dependent dielectric (same model as AutoDock4's
 // default electrostatics). See constants.ts for why this matters: a bare
@@ -261,5 +261,247 @@ export async function scoreAllPosesGPU(
   const energies = new Float32Array(mapped);
   readbackBuf.unmap();
 
+  proteinBuf.destroy();
+  ligandBuf.destroy();
+  posesBuf.destroy();
+  energiesBuf.destroy();
+  readbackBuf.destroy();
+  paramsBuf.destroy();
+
   return { energies, gpuMs: t1 - t0 };
+}
+
+export interface SinglePoseScorer {
+  score(pose: Float32Array): Promise<number>;
+  destroy(): void;
+}
+
+export async function createSinglePoseScorer(
+  proteinAtoms: Float32Array,
+  numProtein: number,
+  ligandAtoms: Float32Array,
+  numLigand: number,
+): Promise<SinglePoseScorer> {
+  const device = await ensureDevice();
+
+  if (!_pipeline) {
+    const module = device.createShaderModule({ code: SHADER_SRC });
+    _pipeline = device.createComputePipeline({
+      layout: "auto",
+      compute: { module, entryPoint: "main" },
+    });
+  }
+
+  const proteinBuf = device.createBuffer({
+    size: proteinAtoms.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const ligandBuf = device.createBuffer({
+    size: ligandAtoms.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const paramsBuf = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const posesBuf = device.createBuffer({
+    size: 48,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const energiesBuf = device.createBuffer({
+    size: 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+  });
+  const readbackBuf = device.createBuffer({
+    size: 4,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+
+  device.queue.writeBuffer(proteinBuf, 0, proteinAtoms.buffer);
+  device.queue.writeBuffer(ligandBuf, 0, ligandAtoms.buffer);
+  device.queue.writeBuffer(
+    paramsBuf, 0,
+    new Uint32Array([numProtein, numLigand, 1, 0]),
+  );
+
+  const bindGroup = device.createBindGroup({
+    layout: _pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: proteinBuf } },
+      { binding: 1, resource: { buffer: ligandBuf } },
+      { binding: 2, resource: { buffer: posesBuf } },
+      { binding: 3, resource: { buffer: energiesBuf } },
+      { binding: 4, resource: { buffer: paramsBuf } },
+    ],
+  });
+
+  return {
+    async score(pose: Float32Array): Promise<number> {
+      device.queue.writeBuffer(posesBuf, 0, pose.buffer);
+
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(_pipeline!);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(1);
+      pass.end();
+      encoder.copyBufferToBuffer(energiesBuf, 0, readbackBuf, 0, 4);
+      device.queue.submit([encoder.finish()]);
+
+      await readbackBuf.mapAsync(GPUMapMode.READ);
+      const mapped = new Float32Array(readbackBuf.getMappedRange());
+      const energy = mapped[0];
+      readbackBuf.unmap();
+
+      return energy;
+    },
+    destroy() {
+      proteinBuf.destroy();
+      ligandBuf.destroy();
+      paramsBuf.destroy();
+      posesBuf.destroy();
+      energiesBuf.destroy();
+      readbackBuf.destroy();
+    },
+  };
+}
+
+let _pipelineGrid: GPUComputePipeline | null = null;
+
+export async function scoreAllPosesGPUWithGrid(
+  gridData: Float32Array,
+  gridOrigin: [number, number, number],
+  gridDims: [number, number, number],
+  gridSpacing: number,
+  numLigandTypes: number,
+  coulLayer: number,
+  ligandAtoms: Float32Array,
+  numLigand: number,
+  poses: Float32Array,
+  numPoses: number,
+): Promise<{ energies: Float32Array; gpuMs: number }> {
+  const device = await ensureDevice();
+
+  if (!_pipelineGrid) {
+    const module = device.createShaderModule({ code: SHADER_GRID_SRC });
+    _pipelineGrid = device.createComputePipeline({
+      layout: "auto",
+      compute: { module, entryPoint: "main" },
+    });
+  }
+
+  const ligandBuf = device.createBuffer({
+    size: ligandAtoms.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const posesBuf = device.createBuffer({
+    size: poses.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const energiesBuf = device.createBuffer({
+    size: numPoses * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+  });
+  const readbackBuf = device.createBuffer({
+    size: numPoses * 4,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const paramsBuf = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const gridBuf = device.createBuffer({
+    size: gridData.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const gridParamsBuf = device.createBuffer({
+    size: 48,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  device.queue.writeBuffer(ligandBuf, 0, ligandAtoms.buffer);
+  device.queue.writeBuffer(posesBuf, 0, poses.buffer);
+  device.queue.writeBuffer(gridBuf, 0, gridData.buffer);
+  device.queue.writeBuffer(
+    paramsBuf, 0,
+    new Uint32Array([numLigand, numLigand, numPoses, 0]),
+  );
+  {
+    const ab = new ArrayBuffer(48);
+    const f32 = new Float32Array(ab);
+    const u32 = new Uint32Array(ab);
+    f32[0] = gridOrigin[0]; f32[1] = gridOrigin[1]; f32[2] = gridOrigin[2];
+    f32[3] = gridSpacing;
+    u32[4] = gridDims[0]; u32[5] = gridDims[1]; u32[6] = gridDims[2];
+    u32[7] = numLigandTypes;
+    u32[8] = coulLayer;
+    device.queue.writeBuffer(gridParamsBuf, 0, ab);
+  }
+
+  const bindGroup = device.createBindGroup({
+    layout: _pipelineGrid.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: ligandBuf } },
+      { binding: 1, resource: { buffer: posesBuf } },
+      { binding: 2, resource: { buffer: energiesBuf } },
+      { binding: 3, resource: { buffer: paramsBuf } },
+      { binding: 4, resource: { buffer: gridBuf } },
+      { binding: 5, resource: { buffer: gridParamsBuf } },
+    ],
+  });
+
+  const t0 = performance.now();
+  const encoder = device.createCommandEncoder();
+  const pass = encoder.beginComputePass();
+  pass.setPipeline(_pipelineGrid);
+  pass.setBindGroup(0, bindGroup);
+  pass.dispatchWorkgroups(Math.ceil(numPoses / 64));
+  pass.end();
+  encoder.copyBufferToBuffer(energiesBuf, 0, readbackBuf, 0, numPoses * 4);
+  device.queue.submit([encoder.finish()]);
+  await readbackBuf.mapAsync(GPUMapMode.READ);
+  const t1 = performance.now();
+
+  const mapped = new Float32Array(readbackBuf.getMappedRange());
+  const energies = new Float32Array(mapped);
+  readbackBuf.unmap();
+
+  ligandBuf.destroy();
+  posesBuf.destroy();
+  energiesBuf.destroy();
+  readbackBuf.destroy();
+  paramsBuf.destroy();
+  gridBuf.destroy();
+  gridParamsBuf.destroy();
+
+  return { energies, gpuMs: t1 - t0 };
+}
+
+export async function scoreAllPosesGPUChunked(
+  proteinAtoms: Float32Array,
+  numProtein: number,
+  ligandAtoms: Float32Array,
+  numLigand: number,
+  poses: Float32Array,
+  numPoses: number,
+  chunkSize = 2000,
+): Promise<{ energies: Float32Array; gpuMs: number }> {
+  const allEnergies = new Float32Array(numPoses);
+  let totalGpuMs = 0;
+
+  for (let start = 0; start < numPoses; start += chunkSize) {
+    const end = Math.min(start + chunkSize, numPoses);
+    const chunkLen = end - start;
+    const chunkPoses = poses.slice(start * 12, end * 12);
+
+    const { energies, gpuMs } = await scoreAllPosesGPU(
+      proteinAtoms, numProtein, ligandAtoms, numLigand, chunkPoses, chunkLen,
+    );
+    allEnergies.set(energies, start);
+    totalGpuMs += gpuMs;
+
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  return { energies: allEnergies, gpuMs: totalGpuMs };
 }

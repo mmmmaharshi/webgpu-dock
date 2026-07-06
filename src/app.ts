@@ -1,180 +1,14 @@
 import type { BenchResult, DemoOptions, AD4Params, LigandAtom } from "./types";
 import { bar } from "./ui";
 import { parsePDBQT, parseLigandPDBQT, loadAD4Params, atomsToArrayReal } from "./parsers";
-import { buildPoses, applyTorsions, generateConformers, computeCenter, toLocalOrigin, randomSmallRotation, multiplyMatrices3 } from "./geometry";
-import { scoreAllPosesGPU, bestOf, evaluatePose } from "./scoring";
-
-declare function OpenBabelModule(): any;
-
-let obMod: any = null;
-let obInit: Promise<void> | null = null;
-
-async function getOB(): Promise<any> {
-  if (obMod) return obMod;
-  if (!obInit) {
-    console.log("[OB] calling OpenBabelModule()...");
-    const watchdog = setInterval(() => {
-      console.warn("[OB] still waiting on OpenBabelModule() init...");
-    }, 3000);
-    obInit = new Promise<void>((resolve, reject) => {
-      try {
-        const m = OpenBabelModule();
-        // m.then() is not guaranteed to return a spec-compliant chainable
-        // Promise (this build's shim doesn't support .catch on it), so
-        // normalize via Promise.resolve() instead of chaining directly.
-        Promise.resolve(m).then(
-          () => {
-            clearInterval(watchdog);
-            console.log("[OB] OpenBabelModule() init resolved");
-            // Re-enable error printing after init
-            if (typeof Module !== 'undefined') {
-              Module.printErr = function(text: string) { console.error(text); };
-              Module.err = function(text: string) { console.error(text); };
-            }
-            obMod = m;
-            resolve();
-          },
-          (e: any) => {
-            clearInterval(watchdog);
-            console.error("[OB] OpenBabelModule() init rejected:", e);
-            reject(e);
-          },
-        );
-      } catch (e) {
-        clearInterval(watchdog);
-        console.error("[OB] OpenBabelModule() threw synchronously:", e);
-        reject(e);
-      }
-    });
-  }
-  await obInit;
-  return obMod;
-}
-
-function extractProteinRecords(pdbText: string): string {
-  const lines: string[] = [];
-  for (const line of pdbText.split("\n")) {
-    const rec = line.slice(0, 6).trim();
-    if (rec === "ATOM" || rec === "TER" || rec === "END") lines.push(line);
-  }
-  return lines.join("\n");
-}
-
-function extractLigandRecords(pdbText: string, resName: string): string {
-  return pdbText
-    .split("\n")
-    .filter(
-      (line) =>
-        line.startsWith("HETATM") && line.slice(17, 20).trim() === resName,
-    )
-    .join("\n");
-}
-
-async function convertPDBToPDBQT(
-  pdbText: string,
-  includeBranches: boolean,
-  addHydrogens: boolean,
-  gen3D: boolean,
-  pH?: number,
-): Promise<string> {
-  console.log(`[OB] convertPDBToPDBQT start, ${pdbText.length} chars, addH=${addHydrogens} gen3D=${gen3D}`);
-  try {
-    console.log("[OB] awaiting getOB()...");
-    const OB = await getOB();
-    console.log("[OB] getOB() resolved");
-    const conv = new OB.ObConversionWrapper();
-    conv.setInFormat("", "pdb");
-    const mol = new OB.OBMol();
-    console.log("[OB] readString...");
-    conv.readString(mol, pdbText);
-    console.log("[OB] readString done");
-    if (addHydrogens) {
-      console.log("[OB] AddHydrogensWithParam...");
-      mol.AddHydrogensWithParam(false, true, pH ?? 7.4);
-      console.log("[OB] AddHydrogensWithParam done");
-    }
-    if (!includeBranches) {
-      conv.addOption("r", OB.ObConversion_Option_type.OUTOPTIONS, "");
-    }
-    if (gen3D) {
-      console.log("[OB] generate3DStructure...");
-      const gen = new OB.OB3DGenWrapper();
-      gen.generate3DStructure(mol, "MMFF94");
-      console.log("[OB] generate3DStructure done");
-    }
-    conv.setOutFormat("", "pdbqt");
-    console.log("[OB] writeString...");
-    const outData = conv.writeString(mol, false);
-    console.log(`[OB] writeString done, ${outData.length} chars`);
-    mol.delete();
-    conv.delete();
-    return outData;
-  } catch (err) {
-    console.error("[OB] convertPDBToPDBQT threw:", err);
-    throw err;
-  }
-}
-
-function metropolisAccept(oldE: number, newE: number, temp: number): boolean {
-  if (newE < oldE) return true;
-  const prob = Math.exp((oldE - newE) / temp);
-  return Math.random() < prob;
-}
-
-async function monteCarloSearch(
-  baseAtoms: LigandAtom[],
-  ad4Table: Record<string, AD4Params>,
-  protein: Float32Array,
-  numProtein: number,
-  startCenter: { x: number; y: number; z: number },
-  startRotation: number[],
-  steps = 300,
-  temp = 3.0,
-): Promise<{ energy: number; center: { x: number; y: number; z: number }; rotation: number[] }> {
-  // NOTE: this used to always test the identity rotation here, discarding
-  // whatever orientation the coarse global search actually found. That made
-  // this "refinement" step throw away the rotational answer and only ever
-  // nudge translation around a (usually wrong) fixed orientation. It now
-  // starts from, and jointly perturbs, the real best rotation + translation
-  // together (simulated annealing over both), which is what actually lets
-  // this step improve on the coarse grid search instead of just re-testing
-  // a pose that was never a real candidate.
-  let current = { center: { ...startCenter }, rotation: startRotation.slice(), energy: Infinity };
-  let best = { center: { ...startCenter }, rotation: startRotation.slice(), energy: Infinity };
-  const baseArr = atomsToArrayReal(baseAtoms, ad4Table);
-  const numLigand = baseAtoms.length;
-
-  for (let step = 0; step < steps; step++) {
-    const scale = 2.0 * (1 - step / steps);
-    const angleScale = (Math.PI / 6) * (1 - step / steps); // up to 30° early, 0° at the end
-
-    const candidateCenter = {
-      x: current.center.x + (Math.random() - 0.5) * scale,
-      y: current.center.y + (Math.random() - 0.5) * scale,
-      z: current.center.z + (Math.random() - 0.5) * scale,
-    };
-    const candidateRotation = multiplyMatrices3(randomSmallRotation(angleScale), current.rotation);
-
-    const testPoses = new Float32Array([
-      ...candidateRotation,
-      candidateCenter.x, candidateCenter.y, candidateCenter.z,
-    ]);
-    const { energies } = await scoreAllPosesGPU(protein, numProtein, baseArr, numLigand, testPoses, 1);
-    const candE = energies[0];
-
-    if (step === 0 || metropolisAccept(current.energy, candE, temp)) {
-      current = { center: candidateCenter, rotation: candidateRotation, energy: candE };
-      if (candE < best.energy) best = { center: candidateCenter, rotation: candidateRotation, energy: candE };
-    }
-  }
-  return best;
-}
+import { buildPoses, applyTorsions, generateConformers, computeCenter, toLocalOrigin } from "./geometry";
+import { createSinglePoseScorer, scoreAllPosesGPUWithGrid, bestOf, evaluatePose } from "./scoring";
+import { buildAffinityGrid, atomsToArrayRealGrid } from "./grid";
+import { bfgsRefine } from "./optimize";
 
 export async function runDemo({
   proteinPDBQT = "data/protein.pdbqt",
   ligandPDBQT = "data/ligand.pdbqt",
-  proteinPDB,
-  ligandResName,
   numRotations = 100,
   translationRange = 4,
   translationStep = 1,
@@ -197,23 +31,10 @@ export async function runDemo({
     "Loading PDB/PDBQT files...",
     async (pg) => {
       pg(10);
-      let pt: string, lt: string;
-
-      if (proteinPDB && ligandResName && typeof OpenBabelModule !== "undefined") {
-        const pdbText = await fetch(proteinPDB).then((r) => r.text());
-        pg(30);
-        const protPdbText = extractProteinRecords(pdbText);
-        const ligPdbText = extractLigandRecords(pdbText, ligandResName);
-        pg(40);
-        pt = await convertPDBToPDBQT(protPdbText, false, false, false);
-        pg(60);
-        lt = await convertPDBToPDBQT(ligPdbText, true, true, false, 7.4);
-      } else {
-        [pt, lt] = await Promise.all([
-          fetch(proteinPDBQT).then((r) => r.text()),
-          fetch(ligandPDBQT).then((r) => r.text()),
-        ]);
-      }
+      const [pt, lt] = await Promise.all([
+        fetch(proteinPDBQT).then((r) => r.text()),
+        fetch(ligandPDBQT).then((r) => r.text()),
+      ]);
       pg(50);
       const par = parsePDBQT(pt);
       const lar = parseLigandPDBQT(lt);
@@ -247,6 +68,18 @@ export async function runDemo({
   const numProtein = proteinAtomsRaw.length;
   const numLigand = ligandAtomsBase.length;
 
+  let tGrid = 0;
+  const grid = await bar.run("Building affinity grid...", async (pg) => {
+    const t0 = performance.now();
+    const ligandTypes = [...new Set(ligandAtomsBase.map(a => a.atomType))];
+    const g = await buildAffinityGrid(proteinAtomsRaw, ad4Table, ligandTypes, pocketCenter, translationRange, 0.375, 6, pg);
+    tGrid = performance.now() - t0;
+    return g;
+  });
+  console.log(
+    `Grid: ${grid.dims[0]}×${grid.dims[1]}×${grid.dims[2]} × ${grid.numLayers} layers, ${grid.spacing.toFixed(3)}Å spacing, ${tGrid.toFixed(0)}ms`,
+  );
+
   const {
     poses,
     numPoses,
@@ -277,18 +110,9 @@ export async function runDemo({
 
   const conformers = generateConformers(numConformers, branches.length);
 
-  // Track every conformer's best coarse pose, not just the single overall
-  // winner. The coarse grid score is noisy (simplified LJ+Coulomb, 1Å/
-  // random-rotation resolution), so the single top scorer isn't always the
-  // best *refinable* basin — a nearby runner-up can turn out to sit in a
-  // deeper, more correct energy well once locally optimized. Refining
-  // several candidates and keeping the best after refinement is what real
-  // docking tools do (multiple seeds / clustering) instead of committing to
-  // one coarse winner. This costs nothing extra during the coarse pass
-  // (bestOf(energies) was already being computed per conformer) — the added
-  // cost is only in re-running Monte Carlo refinement per candidate below.
   const perConformerBest: { energy: number; bestIdx: number; cIdx: number }[] = [];
 
+  const tCoarse = performance.now();
   for (let cIdx = 0; cIdx < conformers.length; cIdx++) {
     bar.setStatus(
       `[${systemName}] ${(((cIdx + 1) / conformers.length) * 100).toFixed(0)}%`,
@@ -305,19 +129,18 @@ export async function runDemo({
     console.log(
       `  Conf #${cIdx}: bent center (${bc.x.toFixed(4)}, ${bc.y.toFixed(4)}, ${bc.z.toFixed(4)}) — shift from origin: ${Math.sqrt(bc.x**2 + bc.y**2 + bc.z**2).toFixed(4)} Å`,
     );
-    const ligandArr = atomsToArrayReal(bentAtoms, ad4Table);
+    const ligandArr = atomsToArrayRealGrid(bentAtoms, grid.typeToLayer, ad4Table);
 
-    const { energies, gpuMs } = await scoreAllPosesGPU(
-      proteinAtoms,
-      numProtein,
-      ligandArr,
-      numLigand,
-      poses,
-      numPoses,
+    const { energies } = await scoreAllPosesGPUWithGrid(
+      grid.data, grid.origin, grid.dims, grid.spacing,
+      grid.numLayers - 1, grid.numLayers - 1,
+      ligandArr, numLigand, poses, numPoses,
     );
     const { best, bestIdx } = bestOf(energies);
     perConformerBest.push({ energy: best, bestIdx, cIdx });
   }
+
+  const tCoarseMs = performance.now() - tCoarse;
 
   perConformerBest.sort((a, b) => a.energy - b.energy);
   const NUM_CANDIDATES = 3;
@@ -327,7 +150,7 @@ export async function runDemo({
   let globalBestIdx = topCandidates.length ? topCandidates[0].bestIdx : -1;
   let globalBestConf = topCandidates.length ? topCandidates[0].cIdx : -1;
 
-  // === Monte Carlo refinement: run on each of the top candidates, keep the best ===
+  const tBFGS = performance.now();
   let bestPoseArr = poses;
   let bestPoseIdx = globalBestIdx;
   let bestBentAtoms: LigandAtom[] = [];
@@ -351,26 +174,24 @@ export async function runDemo({
       };
       const startRotation = Array.from(poses.slice(pb, pb + 9));
       const bentAtoms = applyTorsions(ligandAtomsBase, serialToIndex, branches, conformers[cand.cIdx]);
+      const baseArr = atomsToArrayReal(bentAtoms, ad4Table);
+      const scorer = await createSinglePoseScorer(proteinAtoms, numProtein, baseArr, numLigand);
 
-      bar.setStatus(`[${systemName}] Monte Carlo (candidate ${k + 1}/${topCandidates.length})...`);
-      const mcResult = await monteCarloSearch(
-        bentAtoms, ad4Table, proteinAtoms, numProtein, startCenter, startRotation, 300,
-      );
+      bar.setStatus(`[${systemName}] BFGS refine (candidate ${k + 1}/${topCandidates.length})...`);
+      const bfgsResult = await bfgsRefine(scorer, startCenter, startRotation, 30, 1e-4);
+      scorer.destroy();
 
-      // Compare against this candidate's own coarse energy, not just track
-      // whether MC beat the eventual global winner — each candidate should
-      // get credit for its own refinement.
-      const candidateFinalEnergy = Math.min(mcResult.energy, cand.energy);
+      const candidateFinalEnergy = Math.min(bfgsResult.energy, cand.energy);
       if (candidateFinalEnergy < refinedBest) {
         refinedBest = candidateFinalEnergy;
         refinedBentAtoms = bentAtoms;
         refinedConf = cand.cIdx;
         refinedSourceIdx = cand.bestIdx;
-        if (mcResult.energy < cand.energy) {
+        if (bfgsResult.energy < cand.energy) {
           refinedPoseIdx = 0;
           refinedPoseArr = new Float32Array([
-            ...mcResult.rotation,
-            mcResult.center.x, mcResult.center.y, mcResult.center.z,
+            ...bfgsResult.rotation,
+            bfgsResult.center.x, bfgsResult.center.y, bfgsResult.center.z,
           ]);
         } else {
           refinedPoseIdx = cand.bestIdx;
@@ -380,7 +201,7 @@ export async function runDemo({
     }
 
     if (refinedBest < coarseBest) {
-      console.log(`Monte Carlo improved: ${coarseBest.toFixed(3)} → ${refinedBest.toFixed(3)} kcal/mol (best of ${topCandidates.length} refined candidates)`);
+      console.log(`BFGS improved: ${coarseBest.toFixed(3)} → ${refinedBest.toFixed(3)} kcal/mol (best of ${topCandidates.length} refined candidates)`);
     }
     if (refinedConf !== globalBestConf || refinedSourceIdx !== globalBestIdx) {
       console.log(`  (winner was coarse candidate conformer #${refinedConf}, pose #${refinedSourceIdx}, not the top single coarse score)`);
@@ -398,6 +219,7 @@ export async function runDemo({
   }
 
   bar.setProgress(100);
+  const tBFGSms = performance.now() - tBFGS;
   const totalSec = ((performance.now() - tStart) / 1000).toFixed(1);
 
   const realCenter = knownCenter;
@@ -438,7 +260,7 @@ export async function runDemo({
     `Distance from known position: ${dist.toFixed(2)} Å  ${dist < 2 ? "✓ Hit" : dist < 5 ? "○ Near" : "✗ Miss"}`,
   );
 
-  console.log(`Total run time: ${totalSec}s`);
+  console.log(`Timing: grid ${tGrid.toFixed(0)}ms + coarse ${tCoarseMs.toFixed(0)}ms + BFGS ${tBFGSms.toFixed(0)}ms = ${totalSec}s total`);
   bar.setStatus(
     `Best: ${globalBest.toFixed(1)} kcal/mol — ${dist.toFixed(1)}Å from known`,
   );
@@ -462,12 +284,6 @@ async function runBenchmark(): Promise<void> {
       name: "1IEP (imatinib)",
       prot: "systems/1iep/protein.pdbqt",
       lig: "systems/1iep/ligand.pdbqt",
-      // pdb/resName removed: they triggered the live OpenBabel WASM
-      // PDB->PDBQT conversion path, which hangs during module init in the
-      // browser (never fires its ready callback — a bug in the bundled
-      // openbabel.js/.wasm, not app code). A correctly pre-converted
-      // protein.pdbqt/ligand.pdbqt already exists on disk for 1IEP, same as
-      // the other 4 systems, so just fetch those instead.
       center: [15.614, 53.38, 15.455],
     },
     {
@@ -494,6 +310,24 @@ async function runBenchmark(): Promise<void> {
       lig: "systems/1ac8/ligand.pdbqt",
       center: [31.924, 93.444, 47.924],
     },
+    {
+      name: "3CE3 (Factor Xa)",
+      prot: "systems/3ce3/protein.pdbqt",
+      lig: "systems/3ce3/ligand.pdbqt",
+      center: [20.402, 18.013, 56.855],
+    },
+    {
+      name: "3TMN (thermolysin)",
+      prot: "systems/3tmn/protein.pdbqt",
+      lig: "systems/3tmn/ligand.pdbqt",
+      center: [52.227, 15.518, -2.409],
+    },
+    {
+      name: "7CPA (carboxypeptidase A)",
+      prot: "systems/7cpa/protein.pdbqt",
+      lig: "systems/7cpa/ligand.pdbqt",
+      center: [49.836, 17.609, 36.272],
+    },
   ];
 
   const tBenchStart = performance.now();
@@ -507,8 +341,6 @@ async function runBenchmark(): Promise<void> {
     const r = await runDemo({
       proteinPDBQT: sys.prot,
       ligandPDBQT: sys.lig,
-      proteinPDB: sys.pdb,
-      ligandResName: sys.resName,
       systemName: sys.name,
       knownCenter: sys.center,
       numConformers: 20,

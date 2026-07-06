@@ -83,21 +83,6 @@
 </div>
 
 <div id="log"></div>
-<script>
-// Suppress Emscripten FS warnings during OpenBabel init (harmless /dev/stdin issue)
-// TOTAL_MEMORY: this build has no ALLOW_MEMORY_GROWTH, heap is fixed at load time.
-// Default 16MB is too small for real protein PDB->PDBQT conversion and aborts
-// with OOM (which looks like a crash). Bump to 256MB up front.
-var Module = {
-  TOTAL_MEMORY: 268435456, // 256MB, must be a multiple of 65536
-  printErr: function() {},  // suppress all errors during init
-  err: function() {},
-  quit: function(status, toThrow) { if (toThrow) throw toThrow; },
-  onAbort: function(what) { console.error("OpenBabel WASM aborted:", what); }
-};
-</script>
-<script src="lib/openbabel.js"></script>
-<script src="lib/PDBQTConvert.js"></script>
 <script type="module" src="app.js"></script>
 
 </body>
