@@ -9,3 +9,4 @@
 
 - Do NOT run the dev server or server.ts yourself. The user will run it.
 - use conventional commit message format
+- commit only (no push) — ask the user for push confirmation when results are stable
