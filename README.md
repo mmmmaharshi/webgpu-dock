@@ -15,7 +15,6 @@ Built on AutoDock4's force field (Lennard-Jones 12-6 + Coulomb with Mehler-Solma
 | 1IEP | Imatinib (Gleevec) | ABL kinase |
 | 1HSG | Indinavir | HIV-1 protease |
 | 1STP | Biotin | Streptavidin |
-| 3PTB | Benzamidine | Trypsin |
 | 1AC8 | Temozolomide | Alkyltransferase |
 | 3CE3 | Factor Xa inhibitor | Coagulation factor Xa |
 | 3TMN | Thermolysin inhibitor | Thermolysin |
