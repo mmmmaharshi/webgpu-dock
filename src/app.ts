@@ -299,12 +299,6 @@ async function runBenchmark(): Promise<void> {
       center: [11.118, 1.68, -10.755],
     },
     {
-      name: "3PTB (benzamidine)",
-      prot: "systems/3ptb/protein.pdbqt",
-      lig: "systems/3ptb/ligand.pdbqt",
-      center: [-1.759, 14.461, 16.916],
-    },
-    {
       name: "1AC8 (TMZ)",
       prot: "systems/1ac8/protein.pdbqt",
       lig: "systems/1ac8/ligand.pdbqt",
