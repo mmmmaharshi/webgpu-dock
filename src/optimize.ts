@@ -49,30 +49,25 @@ function stateToPose(state: Float64Array): Float32Array {
 async function computeGradient(
   scorer: SinglePoseScorer,
   state: Float64Array,
-  baseEnergy: number,
   eps: number,
-): Promise<{ grad: Float64Array; energy: number }> {
-  const grad = new Float64Array(6);
-  let reEvalEnergy: number | null = null;
-
+): Promise<Float64Array> {
+  const batch = new Float32Array(12 * 12);
   for (let i = 0; i < 6; i++) {
     const fwd = new Float64Array(state);
     fwd[i] += eps;
-    const fE = await scorer.score(stateToPose(fwd));
+    batch.set(stateToPose(fwd), i * 12);
 
     const bck = new Float64Array(state);
     bck[i] -= eps;
-    const bE = await scorer.score(stateToPose(bck));
-
-    if (i === 0) {
-      reEvalEnergy = await scorer.score(stateToPose(state));
-    }
-
-    grad[i] = (fE - bE) / (2 * eps);
+    batch.set(stateToPose(bck), (i + 6) * 12);
   }
 
-  const energy = reEvalEnergy ?? baseEnergy;
-  return { grad, energy };
+  const energies = await scorer.scoreBatch(batch, 12);
+  const grad = new Float64Array(6);
+  for (let i = 0; i < 6; i++) {
+    grad[i] = (energies[i] - energies[i + 6]) / (2 * eps);
+  }
+  return grad;
 }
 
 export async function bfgsRefine(
@@ -92,8 +87,7 @@ export async function bfgsRefine(
 
   let pose = stateToPose(state);
   let currentEnergy = await scorer.score(pose);
-  let { grad: currentGrad } = await computeGradient(scorer, state, currentEnergy, eps);
-  currentEnergy = await scorer.score(stateToPose(state));
+  let currentGrad = await computeGradient(scorer, state, eps);
 
   let prevEnergy = currentEnergy + 1;
 
@@ -139,8 +133,7 @@ export async function bfgsRefine(
     const s = new Float64Array(6);
     for (let i = 0; i < 6; i++) s[i] = newState[i] - state[i];
 
-    const { grad: newGrad } = await computeGradient(scorer, newState, newEnergy, eps);
-    newEnergy = await scorer.score(stateToPose(newState));
+    const newGrad = await computeGradient(scorer, newState, eps);
 
     prevEnergy = currentEnergy;
     currentEnergy = newEnergy;

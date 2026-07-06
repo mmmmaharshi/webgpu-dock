@@ -178,7 +178,7 @@ export async function runDemo({
       const scorer = await createSinglePoseScorer(proteinAtoms, numProtein, baseArr, numLigand);
 
       bar.setStatus(`[${systemName}] BFGS refine (candidate ${k + 1}/${topCandidates.length})...`);
-      const bfgsResult = await bfgsRefine(scorer, startCenter, startRotation, 30, 1e-4);
+      const bfgsResult = await bfgsRefine(scorer, startCenter, startRotation, 20, 1e-3);
       scorer.destroy();
 
       const candidateFinalEnergy = Math.min(bfgsResult.energy, cand.energy);

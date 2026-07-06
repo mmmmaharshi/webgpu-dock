@@ -273,6 +273,7 @@ export async function scoreAllPosesGPU(
 
 export interface SinglePoseScorer {
   score(pose: Float32Array): Promise<number>;
+  scoreBatch(poses: Float32Array, numPoses: number): Promise<Float32Array>;
   destroy(): void;
 }
 
@@ -304,25 +305,24 @@ export async function createSinglePoseScorer(
     size: 16,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
+  const MAX_BATCH = 32;
   const posesBuf = device.createBuffer({
-    size: 48,
+    size: MAX_BATCH * 48,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
   const energiesBuf = device.createBuffer({
-    size: 4,
+    size: MAX_BATCH * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
   });
   const readbackBuf = device.createBuffer({
-    size: 4,
+    size: MAX_BATCH * 4,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
 
   device.queue.writeBuffer(proteinBuf, 0, proteinAtoms.buffer);
   device.queue.writeBuffer(ligandBuf, 0, ligandAtoms.buffer);
-  device.queue.writeBuffer(
-    paramsBuf, 0,
-    new Uint32Array([numProtein, numLigand, 1, 0]),
-  );
+
+  const paramsBase = new Uint32Array([numProtein, numLigand, 0, 0]);
 
   const bindGroup = device.createBindGroup({
     layout: _pipeline.getBindGroupLayout(0),
@@ -335,25 +335,35 @@ export async function createSinglePoseScorer(
     ],
   });
 
+  async function runBatch(poses: Float32Array, numPoses: number): Promise<Float32Array> {
+    paramsBase[2] = numPoses;
+    device.queue.writeBuffer(paramsBuf, 0, paramsBase);
+    device.queue.writeBuffer(posesBuf, 0, poses.buffer, 0, numPoses * 48);
+
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(_pipeline!);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(numPoses / 64));
+    pass.end();
+    encoder.copyBufferToBuffer(energiesBuf, 0, readbackBuf, 0, numPoses * 4);
+    device.queue.submit([encoder.finish()]);
+
+    await readbackBuf.mapAsync(GPUMapMode.READ);
+    const mapped = new Float32Array(readbackBuf.getMappedRange());
+    const energies = new Float32Array(mapped.slice(0, numPoses));
+    readbackBuf.unmap();
+
+    return energies;
+  }
+
   return {
     async score(pose: Float32Array): Promise<number> {
-      device.queue.writeBuffer(posesBuf, 0, pose.buffer);
-
-      const encoder = device.createCommandEncoder();
-      const pass = encoder.beginComputePass();
-      pass.setPipeline(_pipeline!);
-      pass.setBindGroup(0, bindGroup);
-      pass.dispatchWorkgroups(1);
-      pass.end();
-      encoder.copyBufferToBuffer(energiesBuf, 0, readbackBuf, 0, 4);
-      device.queue.submit([encoder.finish()]);
-
-      await readbackBuf.mapAsync(GPUMapMode.READ);
-      const mapped = new Float32Array(readbackBuf.getMappedRange());
-      const energy = mapped[0];
-      readbackBuf.unmap();
-
-      return energy;
+      const energies = await runBatch(pose, 1);
+      return energies[0];
+    },
+    async scoreBatch(poses: Float32Array, numPoses: number): Promise<Float32Array> {
+      return runBatch(poses, numPoses);
     },
     destroy() {
       proteinBuf.destroy();
